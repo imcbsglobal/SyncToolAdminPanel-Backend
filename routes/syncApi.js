@@ -1,170 +1,183 @@
-// routes/syncApi.js
+// routes/syncApi.js --ADMIN SIDE
 const express = require("express");
 const router = express.Router();
 const logger = require("../utils/logger");
 const dbService = require("../services/dbService");
 
 // Authentication route - provide credentials
-router.post("/auth/credentials", async (req, res) => {
-  const { clientId, accessToken } = req.body;
+// router.post("/auth/credentials", async (req, res) => {
+//   const { clientId, accessToken } = req.body;
 
-  if (!clientId || !accessToken) {
-    logger.warn("Authentication attempt with missing credentials", {
-      clientId: !!clientId,
-    });
-    return res.status(400).json({ error: "Missing clientId or accessToken" });
-  }
+//   if (!clientId || !accessToken) {
+//     logger.warn("Authentication attempt with missing credentials", {
+//       clientId: !!clientId,
+//     });
+//     return res.status(400).json({ error: "Missing clientId or accessToken" });
+//   }
 
-  try {
-    // Retrieve the credentials using the access token
-    const credResult = await dbService.query(
-      "SELECT db_user, db_password FROM sync_users WHERE client_id = $1 AND access_token = $2",
-      [clientId, accessToken]
-    );
+//   try {
+//     // Retrieve the credentials using the access token
+//     const credResult = await dbService.query(
+//       "SELECT db_user, db_password FROM sync_users WHERE client_id = $1 AND access_token = $2",
+//       [clientId, accessToken]
+//     );
 
-    if (credResult.rowCount === 0) {
-      logger.warn("Failed authentication attempt", { clientId });
-      return res
-        .status(401)
-        .json({ error: "Invalid client ID or access token" });
-    }
+//     if (credResult.rowCount === 0) {
+//       logger.warn("Failed authentication attempt", { clientId });
+//       return res
+//         .status(401)
+//         .json({ error: "Invalid client ID or access token" });
+//     }
 
-    logger.info("Successful credential retrieval", { clientId });
-    // Return only database credentials, not server details
-    res.json({
-      dbUser: credResult.rows[0].db_user,
-      dbPassword: credResult.rows[0].db_password,
-    });
-  } catch (error) {
-    logger.error(`Error retrieving credentials: ${error.message}`, {
-      error,
-      clientId,
-    });
-    res.status(500).json({ error: "Server error" });
-  }
-});
+//     logger.info("Successful credential retrieval", { clientId });
+//     // Return only database credentials, not server details
+//     res.json({
+//       dbUser: credResult.rows[0].db_user,
+//       dbPassword: credResult.rows[0].db_password,
+//     });
+//   } catch (error) {
+//     logger.error(`Error retrieving credentials: ${error.message}`, {
+//       error,
+//       clientId,
+//     });
+//     res.status(500).json({ error: "Server error" });
+//   }
+// });
 
 // Data sync route
 router.post("/sync/data", async (req, res) => {
   const { clientId, accessToken, data } = req.body;
 
-  if (!clientId || !accessToken || !data) {
-    logger.warn("Sync attempt with missing fields", {
-      fields: {
-        clientId: !!clientId,
-        accessToken: !!accessToken,
-        data: !!data,
-      },
+  if (!clientId || !accessToken || !Array.isArray(data)) {
+    logger.warn("Sync attempt with missing or invalid fields", {
+      clientId: !!clientId,
+      accessToken: !!accessToken,
+      dataIsArray: Array.isArray(data),
     });
     return res.status(400).json({ error: "Missing required fields" });
   }
 
+  let responsePayload = null;
+
   try {
-    // Using transaction for multi-operation process
     await dbService.transaction(async (client) => {
-      // Verify client exists and token is valid
+      // 1) Verify credentials
       const clientCheck = await client.query(
-        "SELECT client_id FROM sync_users WHERE client_id = $1 AND access_token = $2",
+        "SELECT client_id FROM sync_users WHERE client_id=$1 AND access_token=$2",
         [clientId, accessToken]
       );
-
       if (clientCheck.rowCount === 0) {
-        logger.warn("Sync attempt with invalid credentials", { clientId });
-        throw new Error("Invalid client ID or access token");
+        logger.warn("Invalid credentials during sync", { clientId });
+        throw new Error("UNAUTHORIZED");
       }
 
-      // Remove existing records for acc_master and acc_users
-      await client.query("DELETE FROM acc_master WHERE client_id = $1", [
+      // 2) Clear out old data
+      await client.query("DELETE FROM acc_master WHERE client_id=$1", [
         clientId,
       ]);
-      await client.query("DELETE FROM acc_users WHERE client_id = $1", [
+      await client.query("DELETE FROM acc_users  WHERE client_id=$1", [
         clientId,
       ]);
 
-      // Insert new data
+      // 3) Insert new rows, dispatching by row type
       let recordCount = 0;
+
       for (const row of data) {
-        // First normalize the field names to ensure consistency
-        const normalizedRow = {
-          code: row.CODE || row.code || "",
-          name: row.NAME || row.name || "",
-          address: row.ADDRESS || row.address || "",
-          place: row.BRANCH || row.branch || row.PLACE || row.place || "",
-          super_code: row.SUPERCODE || row.super_code || row.SUPER_CODE || null,
-          client_id: clientId,
-        };
-
-        // Then insert using the normalized names
-        await client.query(
-          `INSERT INTO acc_master (code, name, address, place, super_code, client_id) 
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-          [
-            normalizedRow.code,
-            normalizedRow.name,
-            normalizedRow.address,
-            normalizedRow.place,
-            normalizedRow.super_code,
-            normalizedRow.client_id,
-          ]
-        );
-
-        // Only insert into acc_users if ID and PASS fields exist
         const userId = row.ID || row.id;
         const userPass = row.PASS || row.pass;
 
         if (userId && userPass) {
-          await client.query(
-            `INSERT INTO acc_users (id, pass, client_id) 
-        VALUES ($1, $2, $3)`,
-            [userId, userPass, clientId]
-          );
-          recordCount++;
+          // ——> User row
+          try {
+            logger.info("Inserting acc_users row", { userId, clientId, row });
+            await client.query(
+              `INSERT INTO acc_users (id, pass, client_id) VALUES ($1, $2, $3)`,
+              [userId, userPass, clientId]
+            );
+            recordCount++;
+          } catch (e) {
+            logger.error("❌ acc_users insert failed", {
+              clientId,
+              row,
+              error: e.stack || e.message,
+            });
+            throw e;
+          }
         } else {
-          logger.warn("Skipping row due to missing ID or PASS", {
-            row,
-            clientId,
-          });
+          // ——> Master row
+          const code = row.CODE || row.code || null;
+          const name = row.NAME || row.name || null;
+          const address = row.ADDRESS || row.address || null;
+          const place =
+            row.PLACE || row.place || row.BRANCH || row.branch || null;
+          const superCode =
+            row.SUPERCODE || row.super_code || row.SUPER_CODE || null;
+
+          try {
+            logger.info("Inserting acc_master row", {
+              code,
+              name,
+              clientId,
+              row,
+            });
+            await client.query(
+              `INSERT INTO acc_master
+                   (code, name, address, place, super_code, client_id)
+                 VALUES($1,$2,$3,$4,$5,$6)`,
+              [code, name, address, place, superCode, clientId]
+            );
+            recordCount++;
+          } catch (e) {
+            logger.error("❌ acc_master insert failed", {
+              clientId,
+              row,
+              error: e.stack || e.message,
+            });
+            throw e;
+          }
         }
       }
 
-      // Log sync operation
+      // 4) Log the operation
       await client.query(
-        "INSERT INTO sync_logs (client_id, records_synced, status, message) VALUES ($1, $2, $3, $4)",
+        `INSERT INTO sync_logs
+           (client_id, records_synced, status, message)
+         VALUES($1,$2,$3,$4)`,
         [clientId, recordCount, "SUCCESS", "Sync completed successfully"]
       );
+      logger.info("Successful data sync", { clientId, recordCount });
 
-      logger.info(`Successful data sync`, { clientId, recordCount });
-
-      // Set response within transaction
-      res.locals.responseData = {
+      // 5) Prepare the response
+      responsePayload = {
         success: true,
         message: `Successfully synced ${recordCount} records`,
         recordCount,
       };
     });
 
-    // Send response after transaction completes
-    res.json(res.locals.responseData);
+    // 6) Send back to client
+    return res.status(200).json(responsePayload);
   } catch (error) {
-    logger.error(`Error syncing data: ${error.message}`, { error, clientId });
+    logger.error("Error syncing data:", { clientId, error });
 
-    // Try to log the error
+    // Attempt to log failure
     try {
       await dbService.query(
-        "INSERT INTO sync_logs (client_id, records_synced, status, message) VALUES ($1, $2, $3, $4)",
+        `INSERT INTO sync_logs
+           (client_id, records_synced, status, message)
+         VALUES($1,$2,$3,$4)`,
         [clientId, 0, "FAILED", error.message]
       );
-    } catch (logError) {
-      logger.error(`Failed to log error: ${logError.message}`, {
-        error: logError,
-      });
+    } catch (logErr) {
+      logger.error("Failed to log sync error:", logErr);
     }
 
-    if (error.message === "Invalid client ID or access token") {
-      return res.status(401).json({ error: error.message });
+    if (error.message === "UNAUTHORIZED") {
+      return res
+        .status(401)
+        .json({ error: "Invalid client ID or access token" });
     }
-
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
