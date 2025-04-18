@@ -28,7 +28,12 @@ router.get("/initialize", async (req, res) => {
         db_password VARCHAR(255) NOT NULL,
         access_token VARCHAR(255) NOT NULL,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMP
+        updated_at TIMESTAMP,
+        client_name TEXT,
+        address TEXT,
+        phone_number TEXT,
+        username TEXT,
+        password TEXT
       )
     `);
 
@@ -78,7 +83,7 @@ router.get("/initialize", async (req, res) => {
 router.get("/list-users", async (req, res) => {
   try {
     const result = await dbService.query(
-      "SELECT client_id, db_name, db_user, created_at FROM sync_users ORDER BY created_at DESC"
+      "SELECT client_id, db_name, db_user, client_name, address, phone_number, username, password, created_at FROM sync_users ORDER BY created_at DESC"
     );
 
     res.json({ success: true, users: result.rows });
@@ -91,15 +96,38 @@ router.get("/list-users", async (req, res) => {
 // Create a new user
 router.post("/add-users", async (req, res) => {
   try {
-    const { dbName, dbUser, dbPassword } = req.body;
+    const {
+      dbName,
+      dbUser,
+      dbPassword,
+      clientName,
+      address,
+      phoneNumber,
+      username,
+      password,
+    } = req.body;
 
     // Validate required fields
-    if (!dbName || !dbUser || !dbPassword) {
+    if (
+      !dbName ||
+      !dbUser ||
+      !dbPassword ||
+      !password ||
+      !address ||
+      !clientName ||
+      !phoneNumber ||
+      !username
+    ) {
       logger.warn("Attempt to create user with missing required fields", {
         provided: {
           dbName: !!dbName,
           dbUser: !!dbUser,
           dbPassword: !!dbPassword,
+          password: !!password,
+          address: !!address,
+          clientName: !!clientName,
+          phoneNumber: !!phoneNumber,
+          username: !!username,
         },
       });
       return res.status(400).json({
@@ -130,8 +158,19 @@ router.post("/add-users", async (req, res) => {
 
       // Insert new user
       await client.query(
-        "INSERT INTO sync_users (client_id, db_name, db_user, db_password, access_token, created_at) VALUES ($1, $2, $3, $4, $5, NOW())",
-        [clientId, dbName, dbUser, dbPassword, accessToken]
+        "INSERT INTO sync_users (client_id, db_name, db_user, db_password, access_token, client_name, address, phone_number, username, password, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())",
+        [
+          clientId,
+          dbName,
+          dbUser,
+          dbPassword,
+          accessToken,
+          clientName,
+          address,
+          phoneNumber,
+          username,
+          password,
+        ]
       );
 
       logger.info(`Successfully created user with client ID: ${clientId}`);
@@ -216,21 +255,44 @@ router.delete("/delete-users/:clientId", async (req, res) => {
 router.put("/update-users/:clientId", async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { dbName, dbUser, dbPassword } = req.body;
+    const {
+      dbName,
+      dbUser,
+      dbPassword,
+      clientName,
+      address,
+      phoneNumber,
+      username,
+      password,
+    } = req.body;
 
     // Validate required fields
-    if (!dbName || !dbUser || !dbPassword) {
+    if (
+      !dbName ||
+      !dbUser ||
+      !dbPassword ||
+      !clientName ||
+      !address ||
+      !phoneNumber ||
+      !username ||
+      !password
+    ) {
       logger.warn("Attempt to update user with missing required fields", {
         clientId,
         provided: {
           dbName: !!dbName,
           dbUser: !!dbUser,
           dbPassword: !!dbPassword,
+          clientName: !!clientName,
+          address: !!address,
+          phoneNumber: !!phoneNumber,
+          username: !!username,
+          password: !!password,
         },
       });
       return res.status(400).json({
         success: false,
-        error: "Database name, user, and password are required",
+        error: "All fields are required for updating the user.",
       });
     }
 
@@ -238,8 +300,33 @@ router.put("/update-users/:clientId", async (req, res) => {
     const accessToken = generateSecureToken();
 
     const result = await dbService.query(
-      "UPDATE sync_users SET db_name = $2, db_user = $3, db_password = $4, access_token = $5, updated_at = NOW() WHERE client_id = $1",
-      [clientId, dbName, dbUser, dbPassword, accessToken]
+      `
+      UPDATE sync_users 
+      SET 
+        db_name = $2,
+        db_user = $3,
+        db_password = $4,
+        access_token = $5,
+        client_name = $6,
+        address = $7,
+        phone_number = $8,
+        username = $9,
+        password = $10,
+        updated_at = NOW()
+      WHERE client_id = $1
+      `,
+      [
+        clientId,
+        dbName,
+        dbUser,
+        dbPassword,
+        accessToken,
+        clientName,
+        address,
+        phoneNumber,
+        username,
+        password,
+      ]
     );
 
     if (result.rowCount === 0) {
