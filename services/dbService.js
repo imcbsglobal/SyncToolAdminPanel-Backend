@@ -12,7 +12,7 @@ const pool = new Pool({
   database: process.env.PG_DATABASE,
   user: process.env.PG_USER,
   password: process.env.PG_PASSWORD,
-  ssl: process.env.PG_SSL === "true",
+  ssl: process.env.PG_SSL === "true" ? { rejectUnauthorized: false } : false,
   max: 20, // Maximum number of clients in the pool
   idleTimeoutMillis: 30000, // How long a client is allowed to remain idle before being closed
 });
@@ -42,7 +42,7 @@ async function getClient() {
     database: process.env.PG_DATABASE,
     user: process.env.PG_USER,
     password: process.env.PG_PASSWORD,
-    ssl: process.env.PG_SSL === "true",
+    ssl: process.env.PG_SSL === "true" ? { rejectUnauthorized: false } : false,
   });
 
   try {
