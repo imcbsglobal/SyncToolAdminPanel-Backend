@@ -24,6 +24,14 @@ pool.on("error", (err) => {
 // Test connection
 (async () => {
   try {
+    console.log("Trying to connect to DB with:");
+    console.log({
+      host: process.env.PG_HOST,
+      port: process.env.PG_PORT,
+      database: process.env.PG_DATABASE,
+      user: process.env.PG_USER,
+    });
+
     const res = await pool.query("SELECT NOW()");
     logger.info("✅ Database connected successfully at", {
       time: res.rows[0].now,
