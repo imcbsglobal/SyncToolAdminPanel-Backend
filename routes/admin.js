@@ -356,7 +356,7 @@ router.put("/update-users/:clientId", async (req, res) => {
 router.get("/users/:clientId/config", async (req, res) => {
   try {
     const { clientId } = req.params;
-    const API_URL = process.env.API_URL || "http://localhost:3000";
+    const API_URL = process.env.API_URL || "https://synctool.imcbs.com";
 
     const result = await dbService.query(
       "SELECT client_id, db_name, access_token FROM sync_users WHERE client_id = $1",

@@ -53,7 +53,7 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-const PORT = process.env.PORT || 5004;
+const PORT = process.env.PORT || 5005;
 app.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
 });
