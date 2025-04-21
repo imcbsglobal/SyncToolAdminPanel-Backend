@@ -4,46 +4,6 @@ const router = express.Router();
 const logger = require("../utils/logger");
 const dbService = require("../services/dbService");
 
-// Authentication route - provide credentials
-// router.post("/auth/credentials", async (req, res) => {
-//   const { clientId, accessToken } = req.body;
-
-//   if (!clientId || !accessToken) {
-//     logger.warn("Authentication attempt with missing credentials", {
-//       clientId: !!clientId,
-//     });
-//     return res.status(400).json({ error: "Missing clientId or accessToken" });
-//   }
-
-//   try {
-//     // Retrieve the credentials using the access token
-//     const credResult = await dbService.query(
-//       "SELECT db_user, db_password FROM sync_users WHERE client_id = $1 AND access_token = $2",
-//       [clientId, accessToken]
-//     );
-
-//     if (credResult.rowCount === 0) {
-//       logger.warn("Failed authentication attempt", { clientId });
-//       return res
-//         .status(401)
-//         .json({ error: "Invalid client ID or access token" });
-//     }
-
-//     logger.info("Successful credential retrieval", { clientId });
-//     // Return only database credentials, not server details
-//     res.json({
-//       dbUser: credResult.rows[0].db_user,
-//       dbPassword: credResult.rows[0].db_password,
-//     });
-//   } catch (error) {
-//     logger.error(`Error retrieving credentials: ${error.message}`, {
-//       error,
-//       clientId,
-//     });
-//     res.status(500).json({ error: "Server error" });
-//   }
-// });
-
 // Data sync route
 router.post("/sync/data", async (req, res) => {
   const { clientId, accessToken, data } = req.body;
