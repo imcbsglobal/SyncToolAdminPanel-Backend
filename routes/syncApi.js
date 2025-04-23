@@ -26,6 +26,10 @@ router.post("/sync/data", async (req, res) => {
         "SELECT client_id FROM sync_users WHERE client_id=$1 AND access_token=$2",
         [clientId, accessToken]
       );
+      console.log(
+        `Auth check: Found ${clientCheck.rowCount} rows for client ${clientId}`
+      );
+
       if (clientCheck.rowCount === 0) {
         logger.warn("Invalid credentials during sync", { clientId });
         throw new Error("UNAUTHORIZED");
@@ -137,7 +141,9 @@ router.post("/sync/data", async (req, res) => {
         .status(401)
         .json({ error: "Invalid client ID or access token" });
     }
-    return res.status(500).json({ error: "Server error" });
+    return res
+      .status(500)
+      .json({ error: "Server error", details: error.message });
   }
 });
 
