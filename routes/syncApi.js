@@ -8,6 +8,12 @@ const dbService = require("../services/dbService");
 router.post("/sync/data", async (req, res) => {
   const { clientId, accessToken, data } = req.body;
 
+  // Add more comprehensive logging
+  logger.info("Received sync request", {
+    clientId,
+    dataLength: Array.isArray(data) ? data.length : 0,
+  });
+
   if (!clientId || !accessToken || !Array.isArray(data)) {
     logger.warn("Sync attempt with missing or invalid fields", {
       clientId: !!clientId,
@@ -17,130 +23,130 @@ router.post("/sync/data", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
-  let responsePayload = null;
-
   try {
-    await dbService.transaction(async (client) => {
-      // 1) Verify credentials
-      const clientCheck = await client.query(
-        "SELECT client_id FROM sync_users WHERE client_id=$1 AND access_token=$2",
-        [clientId, accessToken]
-      );
-      console.log(
-        `Auth check: Found ${clientCheck.rowCount} rows for client ${clientId}`
-      );
+    // Use transaction for integrity
+    const { recordCount, errors } = await dbService.transaction(
+      async (client) => {
+        // 1) Verify credentials
+        const clientCheck = await client.query(
+          "SELECT client_id FROM sync_users WHERE client_id=$1 AND access_token=$2",
+          [clientId, accessToken]
+        );
+        logger.info(
+          `Auth check: found ${clientCheck.rowCount} entries for client ${clientId}`
+        );
 
-      if (clientCheck.rowCount === 0) {
-        logger.warn("Invalid credentials during sync", { clientId });
-        throw new Error("UNAUTHORIZED");
-      }
+        if (clientCheck.rowCount === 0) {
+          logger.warn("Invalid credentials during sync", { clientId });
+          throw new Error("UNAUTHORIZED");
+        }
 
-      // 2) Clear out old data
-      await client.query("DELETE FROM acc_master WHERE client_id=$1", [
-        clientId,
-      ]);
-      await client.query("DELETE FROM acc_users  WHERE client_id=$1", [
-        clientId,
-      ]);
+        // 2) Clear out old data
+        await client.query("DELETE FROM acc_master WHERE client_id=$1", [
+          clientId,
+        ]);
+        await client.query("DELETE FROM acc_users WHERE client_id=$1", [
+          clientId,
+        ]);
+        logger.info("Cleared old data for client", { clientId });
 
-      // 3) Insert new rows, dispatching by row type
-      let recordCount = 0;
+        // 3) Insert new rows individually
+        let count = 0;
+        const errs = [];
 
-      for (const row of data) {
-        const userId = row.ID || row.id;
-        const userPass = row.PASS || row.pass;
-
-        if (userId && userPass) {
-          // ——> User row
+        for (const row of data) {
           try {
-            logger.info("Inserting acc_users row", { userId, clientId, row });
-            await client.query(
-              `INSERT INTO acc_users (id, pass, client_id) VALUES ($1, $2, $3)`,
-              [userId, userPass, clientId]
-            );
-            recordCount++;
-          } catch (e) {
-            logger.error("❌ acc_users insert failed", {
-              clientId,
-              row,
-              error: e.stack || e.message,
-            });
-            throw e;
-          }
-        } else {
-          // ——> Master row
-          const code = row.CODE || row.code || null;
-          const name = row.NAME || row.name || null;
-          const address = row.ADDRESS || row.address || null;
-          const place =
-            row.PLACE || row.place || row.BRANCH || row.branch || null;
-          const superCode =
-            row.SUPERCODE || row.super_code || row.SUPER_CODE || null;
+            const userId = row.ID || row.id;
+            const userPass = row.PASS || row.pass;
 
-          try {
-            logger.info("Inserting acc_master row", {
-              code,
-              name,
+            if (userId && userPass) {
+              // Using the composite primary key (id, client_id)
+              await client.query(
+                `INSERT INTO acc_users (id, pass, client_id) VALUES ($1, $2, $3)`,
+                [userId, userPass, clientId]
+              );
+              count++;
+              logger.info("Inserted acc_users row", { clientId, userId });
+            } else {
+              const code = row.CODE || row.code || null;
+              const name = row.NAME || row.name || null;
+              const address = row.ADDRESS || row.address || null;
+              const place =
+                row.PLACE || row.place || row.BRANCH || row.branch || null;
+              const superCode =
+                row.SUPERCODE || row.super_code || row.SUPER_CODE || null;
+
+              if (!code) {
+                logger.warn("Skipping master record with no code", {
+                  clientId,
+                  rowData: JSON.stringify(row),
+                });
+                continue;
+              }
+
+              // Using the composite primary key (code, client_id)
+              await client.query(
+                `INSERT INTO acc_master (code, name, address, place, super_code, client_id)
+                VALUES($1,$2,$3,$4,$5,$6)`,
+                [code, name, address, place, superCode, clientId]
+              );
+              count++;
+              logger.info("Inserted acc_master row", { clientId, code });
+            }
+          } catch (rowError) {
+            logger.error("Row insertion failed", {
               clientId,
               row,
+              error: rowError.stack,
             });
-            await client.query(
-              `INSERT INTO acc_master
-                   (code, name, address, place, super_code, client_id)
-                 VALUES($1,$2,$3,$4,$5,$6)`,
-              [code, name, address, place, superCode, clientId]
-            );
-            recordCount++;
-          } catch (e) {
-            logger.error("❌ acc_master insert failed", {
-              clientId,
-              row,
-              error: e.stack || e.message,
-            });
-            throw e;
+            errs.push({ row, error: rowError.message });
           }
         }
+
+        // Return transaction results
+        return { recordCount: count, errors: errs };
       }
+    );
 
-      // 4) Log the operation
-      await client.query(
-        `INSERT INTO sync_logs
-           (client_id, records_synced, status, message)
-         VALUES($1,$2,$3,$4)`,
-        [clientId, recordCount, "SUCCESS", "Sync completed successfully"]
-      );
-      logger.info("Successful data sync", { clientId, recordCount });
+    // 4) Log the operation
+    const status = errors.length > 0 ? "PARTIAL" : "SUCCESS";
+    const message =
+      errors.length > 0
+        ? `Sync completed with ${errors.length} error(s)`
+        : "Sync completed successfully";
 
-      // 5) Prepare the response
-      responsePayload = {
-        success: true,
-        message: `Successfully synced ${recordCount} records`,
-        recordCount,
-      };
-    });
-
-    // 6) Send back to client
-    return res.status(200).json(responsePayload);
-  } catch (error) {
-    logger.error("Error syncing data:", { clientId, error });
-
-    // Attempt to log failure
     try {
       await dbService.query(
-        `INSERT INTO sync_logs
-           (client_id, records_synced, status, message)
+        `INSERT INTO sync_logs (client_id, records_synced, status, message)
          VALUES($1,$2,$3,$4)`,
-        [clientId, 0, "FAILED", error.message]
+        [clientId, recordCount, status, message]
       );
-    } catch (logErr) {
-      logger.error("Failed to log sync error:", logErr);
+      logger.info("Logged sync operation", { clientId, recordCount, status });
+    } catch (logError) {
+      logger.error("Failed to log sync operation", {
+        clientId,
+        error: logError.stack,
+      });
     }
 
+    // 5) Send response
+    return res.status(200).json({
+      success: true,
+      message: `Successfully synced ${recordCount} records`,
+      recordCount,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error) {
     if (error.message === "UNAUTHORIZED") {
       return res
         .status(401)
         .json({ error: "Invalid client ID or access token" });
     }
+    logger.error("Error syncing data:", {
+      clientId,
+      errorMessage: error.message,
+      errorStack: error.stack,
+    });
     return res
       .status(500)
       .json({ error: "Server error", details: error.message });
@@ -163,7 +169,6 @@ router.post("/sync/log", async (req, res) => {
   }
 
   try {
-    // Verify client exists and token is valid
     const clientCheck = await dbService.query(
       "SELECT client_id FROM sync_users WHERE client_id = $1 AND access_token = $2",
       [clientId, accessToken]
@@ -176,17 +181,16 @@ router.post("/sync/log", async (req, res) => {
         .json({ error: "Invalid client ID or access token" });
     }
 
-    // Log sync operation
     await dbService.query(
       "INSERT INTO sync_logs (client_id, records_synced, status, message) VALUES ($1, $2, $3, $4)",
       [clientId, recordCount || 0, status, message || ""]
     );
 
     logger.info("Sync operation logged", { clientId, status });
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (error) {
     logger.error(`Error logging sync: ${error.message}`, { error, clientId });
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
