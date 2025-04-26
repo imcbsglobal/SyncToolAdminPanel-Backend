@@ -4,6 +4,79 @@ const crypto = require("crypto");
 const router = express.Router();
 const logger = require("../utils/logger");
 const dbService = require("../services/dbService");
+const jwt = require("jsonwebtoken");
+const { requireSuperAdmin } = require("../middleware/auth");
+
+//Admin Login
+const COOKIE_NAME = process.env.COOKIE_NAME;
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN;
+
+if (!COOKIE_NAME || !JWT_SECRET || !JWT_EXPIRES_IN) {
+  throw new Error(
+    "Missing one of COOKIE_NAME, JWT_SECRET or JWT_EXPIRES_IN in .env"
+  );
+}
+router.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+
+  // fetch the one admin row
+  const result = await dbService.query(
+    `SELECT id, username, password, access_token
+       FROM sync_admin
+      WHERE username = $1`,
+    [username]
+  );
+  if (!result.rowCount) {
+    return res
+      .status(401)
+      .json({ success: false, error: "Invalid credentials" });
+  }
+  const admin = result.rows[0];
+
+  // direct plain-text compare
+  if (password !== admin.password) {
+    return res
+      .status(401)
+      .json({ success: false, error: "Invalid credentials" });
+  }
+
+  // generate JWT that lives for 10 days
+  const token = jwt.sign({ adminId: admin.id }, JWT_SECRET, {
+    expiresIn: JWT_EXPIRES_IN,
+  });
+
+  // store that JWT in the DB (to enforce “one session only”)
+  await dbService.query(
+    `UPDATE sync_admin
+        SET access_token = $1, updated_at = NOW()
+      WHERE id = $2`,
+    [token, admin.id]
+  );
+
+  // send as HttpOnly cookie
+  res.cookie(COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 1000 * 60 * 60 * 24 * 10, // 10 days in milliseconds
+  });
+  res.json({ success: true });
+});
+
+// Admin Logout
+router.post("/logout", requireSuperAdmin, async (req, res) => {
+  await dbService.query(
+    `UPDATE sync_admin SET access_token = NULL WHERE id = $1`,
+    [req.adminId]
+  );
+  res.clearCookie(COOKIE_NAME);
+  res.json({ success: true });
+});
+
+// “Who am I?” — returns 200 if token valid
+router.get("/me", requireSuperAdmin, (req, res) => {
+  res.json({ success: true, adminId: req.adminId });
+});
 
 // Generate a secure token for user authentication (10 digit unique ID)
 function generateClientId() {
