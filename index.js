@@ -1,3 +1,4 @@
+// index.js
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
@@ -48,13 +49,16 @@ app.use(
   })
 );
 
-// Standard middleware
-app.use(bodyParser.json());
+// Standard middleware with increased payload limits
+app.use(bodyParser.json({ limit: "50mb" })); // Increased from default 100kb to 50mb
+app.use(bodyParser.urlencoded({ limit: "50mb", extended: true }));
 app.use(cookieParser());
 
-// Request timeouts
+// Request timeouts - increased for large data processing
 app.use((req, res, next) => {
-  res.setTimeout(30000, () => {
+  // Increase timeout to 2 minutes for sync API routes
+  const timeout = req.originalUrl.includes("/api/sync") ? 120000 : 30000;
+  res.setTimeout(timeout, () => {
     res.status(503).json({ success: false, error: "Request timed out" });
   });
   next();
