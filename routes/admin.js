@@ -80,7 +80,7 @@ router.get("/me", requireSuperAdmin, (req, res) => {
 
 // Generate a secure token for user authentication (10 digit unique ID)
 function generateClientId() {
-  return Math.floor(1000000000 + Math.random() * 9000000000).toString();
+  return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
 // Generate a secure token for user authentication
